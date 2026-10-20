@@ -14,5 +14,9 @@ enable_testing()
 add_executable(WriterTests tests/WriterTests.cpp)
 target_link_libraries(WriterTests PRIVATE common GTest::gtest_main) 
 
+add_executable(ParserTests tests/ParserTests.cpp)
+target_link_libraries(ParserTests PRIVATE common GTest::gtest_main)
+
 include(GoogleTest) 
 gtest_discover_tests(WriterTests)
+gtest_discover_tests(ParserTests)

@@ -40,5 +40,6 @@ namespace FIX{
         constexpr char NewOrderSingle       = 'D';
         constexpr char OrderCancelRequest   = 'F';
         constexpr char ExecutionReport      = '8';
+        constexpr char OrderReplaceRequest  = 'G';
     }
 }
