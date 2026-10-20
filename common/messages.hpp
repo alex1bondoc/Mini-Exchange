@@ -21,7 +21,15 @@ struct CancelOrder {
     OrderId     order;
     SymbolId    symbol;
 };
-using InboundMessage = std::variant<NewOrder, CancelOrder>;
+struct ReplaceOrder {
+    ClientId    client;
+    OrderId     order;
+    SymbolId    symbol;
+    Side        side;
+    Price       new_price;
+    Qty         new_qty;
+};
+using InboundMessage = std::variant<NewOrder, CancelOrder, ReplaceOrder>;
 // engine ----> client
 enum class RejectReason {
     None,
