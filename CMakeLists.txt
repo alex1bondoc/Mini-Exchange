@@ -26,10 +26,14 @@ target_link_libraries(FramerTests PRIVATE common GTest::gtest_main)
 add_executable(PoolTests tests/PoolTests.cpp)
 target_link_libraries(PoolTests PRIVATE common GTest::gtest_main)
 
+add_executable(OrderBookTests tests/OrderBookTests.cpp)
+target_link_libraries(OrderBookTests PRIVATE common GTest::gtest_main)
+
 include(GoogleTest) 
 gtest_discover_tests(WriterTests)
 gtest_discover_tests(ParserTests)
 gtest_discover_tests(ConversionTests)
 gtest_discover_tests(FramerTests)
 gtest_discover_tests(PoolTests)
+gtest_discover_tests(OrderBookTests)
 
