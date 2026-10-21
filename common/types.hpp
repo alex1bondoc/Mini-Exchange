@@ -4,6 +4,7 @@
 #include <array>
 
 namespace FIX{
+    
     using Price     = int64_t;
     using Qty       = int64_t;
     using OrderId   = int64_t;
