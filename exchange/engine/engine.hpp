@@ -246,6 +246,39 @@ private:
             }
         }
 
+        FIX::Side opp = opposite(o.side);
+        if (o.tif == FIX::TimeInForce::FOK) {
+            if (book->available(opp, o.price) < o.qty) {
+                reject(o.client, o.order, o.side, FIX::RejectReason::FokNotFilled, out);
+                return;
+            }
+        }
+
+        report_new(o.client, o.order, o.side, o.qty, out);
+        
+        std::optional<FIX::Price> limit = (o.type == FIX::OrderType::Limit) ? o.price : std::nullopt;
+        fills_.clear();
+        FIX::Qty filled = match(*book, o.side, limit, o.qty, fills_);
+
+        emit_fills(o.client, o.order, o.side, o.symbol_id, filled, o.qty, 0, fills_, out);
+
+        FIX::Qty remaining = o.qty - filled;
+        if (remaining == 0) {
+            return;
+        }
+
+        if (o.type == FIX::OrderType::Limit && o.tif == FIX::TimeInForce::DAY) {
+            bool rest = book->rest(o.order, o.client, o.side, o.price, remaining);
+            if (!rest) {
+                report_canceled(o.client, o.order, o.side, filled, out);
+                return;
+            }
+        }
+        if (o.type == FIX::OrderType::Market || o.tif == FIX::TimeInForce::FAK) {
+            report_canceled(o.client, o.order, o.side, filled, out);
+        }
+
+
     }
 
     // ============================== FILLS ==============================

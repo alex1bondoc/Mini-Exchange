@@ -13,6 +13,8 @@ namespace FIX {
     using SeqNum    = int64_t;
     using Timestamp = int64_t;
 
+
+    
     enum class Side {
         Buy,
         Sell
@@ -47,4 +49,10 @@ namespace FIX {
         Price       min_price;
         Price       max_price;
     };
+}
+inline constexpr Side opposite(Side side) {
+    if (side == Side::Buy) {
+        return Side::Sell;
+    }
+    return Side::Buy;
 }
