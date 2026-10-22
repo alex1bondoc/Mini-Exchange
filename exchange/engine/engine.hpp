@@ -216,8 +216,36 @@ private:
     //     Carte după: Buy 20@11 (id 9, filled 80)
     void on_new(const FIX::NewOrder& o, EngineOutput& out) {
         OrderBook* book = book_for(o.symbol_id);
-        if (!book) { return; }
-        
+        if (!book) { 
+            reject(o.client, o.order, o.side, FIX::RejectReason::UnknownSymbol, out);
+            return;
+        }
+        auto r = validate(o, *book);
+        if (r != FIX::RejectReason::None) {
+            reject(o.client, o.order, o.side, r, out);
+            return;
+        }
+
+        if (o.type == FIX::OrderType::Stop || o.type == FIX::OrderType::StopLimit) {
+            return;
+        }
+        if (o.post_only) {
+            if (o.side == FIX::Side::Buy) {
+                long best_ask = *book->best_ask();
+                if (best_ask <= o.price) {
+                    reject(o.client, o.order, o.side, FIX::RejectReason::PostOnlyWouldCross, out);
+                    return;
+                }
+            }
+            else {
+                long best_buy = *book->best_bid();
+                if (best_buy >= o.price) {
+                    reject(o.client, o.order, o.side, FIX::RejectReason::PostOnlyWouldCross, out);
+                    return;
+                }
+            }
+        }
+
     }
 
     // ============================== FILLS ==============================
