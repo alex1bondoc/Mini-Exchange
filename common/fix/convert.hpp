@@ -357,6 +357,9 @@ namespace FIX {
             case RejectReason::PostOnlyWouldCross:  return "post-only would cross";
             case RejectReason::FokNotFilled:        return "FOK can't be filled";
             case RejectReason::InvalidCombination:  return "invalid order type combination";
+            case RejectReason::UnknownSymbol:       return "bad symbol";
+            case RejectReason::DuplicateOrder:      return "cannot duplicate an order";
+            case RejectReason::BookFull:            return "can't accept any more orders";
         }
         return "rejected";
     }

@@ -40,7 +40,10 @@ namespace FIX {
         UnknownOrder,
         PostOnlyWouldCross,
         FokNotFilled,
-        InvalidCombination
+        InvalidCombination,
+        UnknownSymbol,
+        DuplicateOrder,
+        BookFull
     };
     enum class ExecType {
         New,

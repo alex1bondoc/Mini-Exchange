@@ -95,6 +95,14 @@ public:
         }
     }
 
+    bool contains(FIX::OrderId id) const {
+        return id_to_idx_.contains(id);
+    }
+    std::optional<OrderIdx> get_order_by_id(FIX::OrderId id) const {
+        const auto it = id_to_idx_.find(id);
+        if (it == id_to_idx_.end()) { return std::nullopt; }
+        return it->second;
+    }
     const Order& get_order(OrderIdx idx) const {
         return pool_[idx];
     }
@@ -171,11 +179,11 @@ public:
         }
         return ids;
     }
-
-private:
     bool valid_price(FIX::Price price) const {
         return price >= min_price_ && price <= max_price_ && (price - min_price_) % tick_size_ == 0;
     }
+private:
+    
     long to_index(FIX::Price price) const { return static_cast<long>((price - min_price_) / tick_size_); }
     FIX::Price  to_price(long idx) const  { return idx * tick_size_ + min_price_; }
 
