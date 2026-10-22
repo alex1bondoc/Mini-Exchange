@@ -12,7 +12,8 @@ struct Level {
 
 class OrderBook {
 public:
-    OrderBook(FIX::Price min_price, FIX::Price max_price, FIX::Price tick_size, std::size_t capacity) :
+    OrderBook(FIX::SymbolId symbol, FIX::Price min_price, FIX::Price max_price, FIX::Price tick_size, std::size_t capacity = 1024) :
+    symbol_{symbol},
     min_price_{min_price},
     max_price_{max_price},
     tick_size_{tick_size},
@@ -22,6 +23,9 @@ public:
     best_ask_{static_cast<long>(asks_.size())},
     pool_(capacity) {}
 
+    // TODO (engine): adaugă parametrul `FIX::Qty filled = 0` și setează order.filled = filled.
+    //   Altfel, după o execuție parțială, restul pus în carte are filled = 0
+    //   → CumQty greșit în rapoartele viitoare (vezi on_new pasul 9 în engine.hpp).
     bool rest(FIX::OrderId id, FIX::ClientId client, FIX::Side side, FIX::Price price, FIX::Qty qty) {
         if (id_to_idx_.contains(id) || qty <= 0 || !valid_price(price)) {
             return false;
@@ -107,6 +111,9 @@ public:
         return pool_[idx];
     }
 
+    // TODO: variabila `price` nu e folosită, iar cele două ramuri sunt identice → una singură.
+    // TODO (engine, replace caz A): adaugă `shrink(OrderIdx idx, FIX::Qty qty)` — la fel ca reduce
+    //   (scade order.qty și level.total_qty, ordinul NU se mută în coadă), dar FĂRĂ order.filled += qty.
     void reduce(OrderIdx idx, FIX::Qty qty) {
         Order& order = pool_[idx];
 
@@ -179,6 +186,13 @@ public:
         }
         return ids;
     }
+    // TODO (engine): getter-e min_price() / max_price() — necesare în validate (OutsideBand
+    //   separat de InvalidPrice) și la FOK Market (limita = capătul benzii).
+
+    FIX::Price get_min_price() const { return min_price_; }
+    FIX::Price get_max_price() const { return max_price_; }
+    FIX::Price get_tick_size() const { return tick_size_; }
+
     bool valid_price(FIX::Price price) const {
         return price >= min_price_ && price <= max_price_ && (price - min_price_) % tick_size_ == 0;
     }
@@ -238,7 +252,7 @@ private:
         order.prev = NIL;
         order.next = NIL;
     }
-
+    FIX::SymbolId symbol_{};
     FIX::Price min_price_, max_price_, tick_size_;
     std::vector<Level> bids_, asks_;
     long best_bid_{-1};

@@ -3,7 +3,7 @@
 #include <string_view>
 #include <array>
 
-namespace FIX{
+namespace FIX {
     
     using Price     = int64_t;
     using Qty       = int64_t;
