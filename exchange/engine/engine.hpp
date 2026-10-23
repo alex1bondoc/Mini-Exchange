@@ -302,7 +302,20 @@ private:
     void emit_fills(FIX::ClientId client, FIX::OrderId order, FIX::Side side, FIX::SymbolId symbol,
                     FIX::Qty total_qty, FIX::Qty start_filled, FIX::Timestamp time,
                     const std::vector<Fill>& fills, EngineOutput& out) {
-
+        FIX::Qty cum = start_filled;
+        for (const auto& fill : fills_) {
+            cum += fill.qty;
+            out.trades.emplace_back(FIX::Trade{.seq = ++seq_num_, .symbol = symbol, .price = fill.price, 
+                                            .qty = fill.qty, .side = side, .time = time});
+            out.reports.emplace_back(FIX::ExecReport{.client = client, .order = order, .side = side,
+                                                     .type = FIX::ExecType::Trade, .filled_qty = cum,
+                                                     .leaves_qty = total_qty - cum, .last_price = fill.price, 
+                                                     .last_qty = fill.qty, .reason = FIX::RejectReason::None});
+            out.reports.emplace_back(FIX::ExecReport{.client = fill.client, .order = fill.id, .side = fill.side,
+                                                     .type = FIX::ExecType::Trade, .filled_qty = fill.filled,
+                                                     .leaves_qty = fill.leaves, .last_price = fill.price,
+                                                     .last_qty = fill.qty, .reason = FIX::RejectReason::None});
+        }
     }
 
     // ============================== CANCEL ==============================
@@ -320,6 +333,26 @@ private:
     //   5. book->remove(o.order).
     //   6. report_canceled(filled = filled-ul copiat).
     void on_cancel(const FIX::CancelOrder& o, EngineOutput& out) {
+        OrderBook* book = book_for(o.symbol);
+        if (!book) {
+            reject(o.client, o.order, o.side,FIX::RejectReason::UnknownSymbol, out);
+            return;
+        }
+        std::optional<OrderIdx> idx = book->get_order_by_id(o.order);
+        if (idx) {
+            reject(o.client, o.order, o.side,FIX::RejectReason::UnknownOrder, out);
+            return;
+        }
+        const Order& order = book->get_order(*idx);
+        const auto client = order.client;
+        const auto side = order.side;
+        const auto filled = order.filled;
+        if (client != o.client) {
+            reject(o.client, o.order, o.side,FIX::RejectReason::UnknownOrder, out);
+            return;
+        }
+        book->remove(o.order);
+        report_canceled(client, o.order, side, filled, out);
 
     }
 
@@ -356,7 +389,25 @@ private:
     //
     //   Același preț și aceeași cantitate → nimic de schimbat, doar raport Replaced.
     void on_replace(const FIX::ReplaceOrder& o, EngineOutput& out) {
-
+        OrderBook* book = book_for(o.symbol);
+        if (!book) {
+            reject(o.client, o.order, o.side,FIX::RejectReason::UnknownSymbol, out);
+            return;
+        }
+        std::optional<OrderIdx> idx = book->get_order_by_id(o.order);
+        if (idx) {
+            reject(o.client, o.order, o.side,FIX::RejectReason::UnknownOrder, out);
+            return;
+        }
+        const Order& order = book->get_order(*idx);
+        const auto client = order.client;
+        const auto side = order.side;
+        const auto filled = order.filled;
+        if (client != o.client) {
+            reject(o.client, o.order, o.side,FIX::RejectReason::UnknownOrder, out);
+            return;
+        }
+        if (!book->valid_price(o.))
     }
 
     // ============================== STARE ==============================

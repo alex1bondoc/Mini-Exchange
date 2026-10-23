@@ -21,6 +21,7 @@ namespace FIX {
         ClientId    client;
         OrderId     order;
         SymbolId    symbol;
+        Side        side;
     };
     struct ReplaceOrder {
         ClientId    client;
