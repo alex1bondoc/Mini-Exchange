@@ -57,7 +57,13 @@ namespace FIX {
 
     enum class CxlRejResponseTo : char { Cancel = '1', Replace = '2' };
     enum class CxlRejReason : int64_t { TooLate = 0, UnknownOrder = 1 };
-    enum class SessionRejectReason : int64_t { RequiredTagMissing = 1, ValueIsIncorrect = 5, IncorrectDataFormat = 6, InvalidMsgType = 11 };
+    enum class SessionRejectReason : int64_t { 
+        RequiredTagMissing = 1, 
+        ValueIsIncorrect = 5, 
+        IncorrectDataFormat = 6, 
+        InvalidMsgType = 11 
+    };
+    
     struct ExecReport {
         ClientId    client;
         OrderId     order;

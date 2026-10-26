@@ -94,129 +94,180 @@ Fiecare mesaj trimis: secvența de ieșire++ (pornește de la 1), last_sent = no
 
 enum class SessionState { AwaitingLogon, Active, LoggedOut };
 
-enum class SessionAction { None, Deliver, Reply, Reject, Logout, Close };
+// Disconnect = conexiunea se taie FĂRĂ să trimiți nimic; de aceea nu are nevoie de text/reason
+enum class SessionAction { None, Deliver, Reply, Reject, Logout, Disconnect };
 
 struct SessionResult {
     SessionAction            action{SessionAction::None};
     char                     reply_type{};   // Reply: ce mesaj trimite gateway-ul ('A', '0')
     FIX::SeqNum              ref_seq{};      // Reject: 45
+    // NOTĂ: SessionRejectReason NU are None. Când nu ai reason, nu-l scrie deloc în {...}:
+    //       câmpurile omise rămân pe valoarea implicită ({}). Ex: {SessionAction::Deliver} e un rezultat complet.
+    //       Pentru Logout cu text, sari peste reason cu {} : {SessionAction::Logout, 0, 0, {}, "text"}.
     FIX::SessionRejectReason reason{};       // Reject: 373
     std::string_view         text{};         // Reject / Logout: 58 (gol = fără 58)
 };
 
 class Session {
 public:
-    Session(std::string exchange_comp_id, FIX::Timestamp connected_at, FIX::Timestamp heartbeat_interval):
+    // NOTĂ: lista de inițializare trebuie scrisă în ORDINEA declarării membrilor de jos
+    //       (state_, exchange_comp_id_, ..., logon_timeout_, connected_at_, last_received_, last_sent_).
+    //       Acum last_received_/last_sent_ sunt înaintea lui logon_timeout_/connected_at_ → warning -Wreorder.
+    //       Compilatorul îi inițializează oricum în ordinea declarării, nu în cea scrisă aici.
+    Session(std::string exchange_comp_id, FIX::Timestamp connected_at, FIX::Timestamp logon_timeout) :
         exchange_comp_id_(std::move(exchange_comp_id)),
         last_received_(connected_at),
         last_sent_(connected_at),
-        heartbeat_interval_(heartbeat_interval) {}
+        logon_timeout_(logon_timeout),
+        connected_at_(connected_at) {}
 
     SessionResult on_message(const FIX::Message& msg, FIX::Timestamp now) {
+        // NOTĂ: Session = stratul de SESIUNE. Se uită doar la header (35, 34, 49, 56) și la câmpurile de sesiune
+        //       (98, 108). NU știe ce e un preț sau o cantitate — asta e treaba lui convert (stratul de deasupra).
+        //       Tipul mesajului e în msg.type (char), NU în msg.get(35) — testele nici nu pun fields[35].
+        //
+        // NOTĂ: fă-ți întâi două funcții private (jos, la private:):
+        //         logout(text)   → state_ = LoggedOut și întoarce {Logout, ..., text}
+        //         disconnect()   → state_ = LoggedOut și întoarce {Disconnect}
+        //       Atunci fiecare eșec e un rând: if (...) return logout("wrong 98");
+        //       Un switch (state_) cu câte o funcție privată pe stare (on_awaiting_logon / on_active) ține
+        //       on_message scurt.
+        //
+        // ── AwaitingLogon ──
+        //   1. msg.type nu e Logon                       → disconnect()   (PRIMA verificare)
+        //   2. 34 trebuie să fie exact "1"                → altfel logout  (text fix → comparație de string_view)
+        //   3. 98 trebuie să fie exact "0"                → altfel logout  (gol e și el != "0", deci o singură verificare)
+        //   4. 108 număr întreg valid și > 0              → altfel logout
+        //        aici chiar parsezi: helper privat (ex. std::optional<int64_t>) cu std::from_chars:
+        //          gol → invalid; ec != std::errc{} → invalid; ptr != sfârșit → invalid ("30s"); apoi > 0
+        //        (același tipar ca la qty în decode_new_order din convert.hpp). NU std::stoll (vrea std::string, aruncă).
+        //   5. 49 nu e gol                                → altfel logout
+        //   6. 56 == exchange_comp_id_                    → altfel logout
+        //   Totul OK: copiezi 49 în client_comp_id_, salvezi HeartBtInt-ul parsat, expected_incoming_seq_ = 2,
+        //             last_received_ = now, state_ = Active, întorci Reply cu 'A'.
+        //   Textul de logout trebuie să fie ne-gol (testul InvalidLogonHasText).
+        //
+        // ── Active ── (ordinea din tabel)
+        //   1. 34 lipsă                                   → logout
+        //   2. 49 != client_comp_id_ sau 56 != exchange   → logout   (întâi „cine ești”...)
+        //   3. 34 != secvența așteptată                   → logout   (...apoi „al câtelea mesaj e”)
+        //        comparația cu std::to_string(expected_incoming_seq_) prinde dintr-o lovitură
+        //        "abc", "-2", "2x", golul și repetarea — fără parsare.
+        //   4. O SINGURĂ DATĂ, înainte de a trata tipul: reține secvența curentă (îți trebuie ca 45),
+        //      apoi expected_incoming_seq_++ și last_received_ = now.
+        //   5. după msg.type:
+        //        Logon (al doilea)  → logout
+        //        Heartbeat          → nimic
+        //        Logout             → logout (răspunzi cu 5, treci în LoggedOut)
+        //        D / F / G          → Deliver. NU decodezi nimic aici! Gateway-ul cheamă convert după Deliver,
+        //                             iar dacă convert eșuează, cheamă session.reject(...). (OrderMessagesAreDelivered
+        //                             trimite un D fără câmpuri de ordin și așteaptă Deliver.)
+        //        Reject (3)         → nimic (dar secvența a fost consumată la pasul 4)
+        //        orice altceva      → Reject cu ref_seq = secvența reținută la pasul 4, reason InvalidMsgType
+        //
+        // ── LoggedOut ── nimic: întorci {}.
         if (state_ == SessionState::AwaitingLogon) {
-            if (msg.get(FIX::tag::MsgSeqNum) == "") { return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 34"}; }
-            if (msg.get(FIX::tag::SenderCompId) == "") { return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 49"}; }
-            if (msg.get(FIX::tag::TargetCompId) != exchange_comp_id_) { return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 56"}; }
-            if (msg.type == FIX::msg_type::Logon) {
-                if (msg.get(FIX::tag::EncryptionMethod) == "") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 98"}; }
-                if (msg.get(FIX::tag::EncryptionMethod) != "0") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 98"}; }
-                if (msg.get(FIX::tag::HeartBtInt) == "") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 108"}; }
-                if (msg.get(FIX::tag::HeartBtInt) != "1") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "incorrect 108"}; }
-                state = SessionState::Active;
-                client_comp_id_ = msg.get(FIX::tag::SenderCompId);
-                heartbeat_interval_ = std::stoll(msg.get(FIX::tag::HeartBtInt));
-                last_received_ = now;
-                expected_incoming_seq_ = 2;
-                return {SessionAction::Reply, FIX::msg_type::Logon};
-            } else {
-                return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::InvalidMsgType, "expected Logon"};
+            if (msg.type != FIX::MsgType::Logon) {
+                return disconnect();
             }
-        } else if (state_ == SessionState::Active) {
-            if (msg.get(FIX::tag::MsgSeqNum) == "") { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 34"}; }  
-            if (msg.get(FIX::tag::MsgSeqNum) != std::to_string(expected_incoming_seq_)) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 34"}; }
-            if (msg.get(FIX::tag::SenderCompId) == "") { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 49"}; }
-            if (msg.get(FIX::tag::SenderCompId) != client_comp_id_) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 49"}; }
-            if (msg.get(FIX::tag::TargetCompId) != exchange_comp_id_) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 56"}; }
-            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::Logon) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::InvalidMsgType, "duplicate Logon"}; }
-            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::HeartBeat) { last_received_ = now; expected_incoming_seq_++; return {SessionAction::None, 0, 0, FIX::SessionRejectReason::None, ""}; }
-            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::Logout) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::None, ""}; }
-            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::NewOrderSingle) {
-                last_received_ = now;
-                expected_incoming_seq_++;
-                std::expected<FIX::NewOrderFields, FIX::ConvertError> fields = FIX::decode_new_order(msg);
-                if (!fields) {
-                    int tmp;
-                    auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(), tmp);
-                    if (ec != std::errc{} || ptr != msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size()) {
-                        return {SessionAction::Reject, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "invalid MsgSeqNum"};
-                    }
-                    return {SessionAction::Reply, 0, tmp};
+            if (msg.get(FIX::tag::MsgSeqNum) != "1") {
+                return logout("Logon: 34 != 1");
+            }
+            if (msg.get(FIX::tag::EncryptMethod) != "0") {
+                return logout("Logon: 98 != 0");
+            }
+            if (msg.get(FIX::tag::HeartBtInt).empty()) {
+                return logout("Logon: 108 missing");
+            }
+            auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::HeartBtInt).data(),
+                                            msg.get(FIX::tag::HeartBtInt).data() + msg.get(FIX::tag::HeartBtInt).size(),
+                                            heartbeat_interval_);
+            if (ec != std::errc{} || ptr != msg.get(FIX::tag::HeartBtInt).data() + msg.get(FIX::tag::HeartBtInt).size() || heartbeat_interval_ <= 0) {
+                return logout("Logon: 108 invalid");
+            }
+            if (msg.get(FIX::tag::SenderCompId).empty()) {
+                return logout("Logon: 49 missing");
+            }
+            if (msg.get(FIX::tag::TargetCompId) != exchange_comp_id_) {
+                return logout("Logon: 56 != exchange"); 
+            }
+            client_comp_id_ = std::string(msg.get(FIX::tag::SenderCompId));
+            expected_incoming_seq_ = 2;
+            state = SessionState::Active;
+            return {SessionAction::Reply, FIX::MsgType::Logon};
+        }
+        else if (state_ == SessionState::Active) {
+            if (msg.get(FIX::tag::MsgSeqNum).empty()) {
+                return logout("Active: 34 missing");
+            }
+            if (msg.get(FIX::tag::SenderCompId) != client_comp_id_ || msg.get(FIX::tag::TargetCompId) != exchange_comp_id_) {
+                return logout("Active: 49/56 mismatch");
+            }
+            if (msg.get(FIX::tag::MsgSeqNum) != std::to_string(expected_incoming_seq_)) {
+                return logout("Active: 34 != expected");
+            }
+            ++expected_incoming_seq_;
+            last_received_ = now;
+            if (msg.type == FIX::MsgType::Logon) {
+                return logout("Active: duplicate Logon");
+            }
+            else if (msg.type == FIX::MsgType::Heartbeat) {
+                return {};
+            }
+            else if (msg.type == FIX::MsgType::Logout) {
+                state_ = SessionState::LoggedOut;
+                return {SessionAction::Logout, 0, 0, {}, "Logout received"};
+            }
+            else if (msg.type == FIX::MsgType::NewOrderSingle ||
+                     msg.type == FIX::MsgType::OrderCancelRequest ||
+                     msg.type == FIX::MsgType::OrderCancelReplaceRequest) {
+                return {SessionAction::Deliver};
+            }
+            else if (msg.type == FIX::MsgType::Reject) {
+                return {};
+            }
+            else {
+                int64_t tmp;
+                auto [ec, ptr] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(),
+                                            msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(),
+                                            tmp);
+                if (ec != std::errc{} || ptr != msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size()) {
+                    return logout("Active: 34 invalid");
                 }
-                return {SessionAction::Deliver, 0, 0, FIX::SessionRejectReason::None, ""};
-            } else if (msg.get(FIX::tag::MsgType) == FIX::msg_type::OrderCancelRequest) {
-                last_received_ = now;
-                expected_incoming_seq_++;
-                std::expected<FIX::CancelFields, FIX::ConvertError> fields = FIX::decode_cancel(msg);
-                if (!fields) {
-                    int tmp;
-                    auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(), tmp);
-                    if (ec != std::errc{} || ptr != msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size()) {
-                        return {SessionAction::Reject, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "invalid MsgSeqNum"};  
-                    }
-                    return {SessionAction::Reply, 0, tmp};
-                }
-                return {SessionAction::Deliver, 0, 0, FIX::SessionRejectReason::None, ""};
-            } else if (msg.get(FIX::tag::MsgType) == FIX::msg_type::OrderCancelReplaceRequest) {
-                last_received_ = now;
-                expected_incoming_seq_++;
-                std::expected<FIX::ReplaceFields, FIX::ConvertError> fields = FIX::decode_replace(msg);
-                if (!fields) {
-                    int tmp;
-                    auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(), tmp);
-                    if (ec != std::errc{} || ptr != msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size()) {
-                        return {SessionAction::Reject, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "invalid MsgSeqNum"};
-                    }
-                    return {SessionAction::Reject, 0, tmp};
-                }
-                return {SessionAction::Deliver, 0, 0, FIX::SessionRejectReason::None, ""};
-            } else if (msg.get(FIX::tag::MsgType) == FIX::msg_type::Reject) {
-                last_received_ = now;
-                expected_incoming_seq_++;
-                return {SessionAction::None, 0, 0, FIX::SessionRejectReason::None, ""};
-            } else {
-                last_received_ = now;
-                expected_incoming_seq_++;
-                return {SessionAction::Reject, 0, std::stoll(msg.get(FIX::tag::MsgSeqNum)), FIX::SessionRejectReason::InvalidMsgType, "unsupported MsgType"};
+                return {SessionAction::Reject, 0, tmp, FIX::SessionRejectReason::InvalidMsgType, "Invalid MsgType"};
             }
         }
-
         return {};
     }
+
     SessionResult on_timer(FIX::Timestamp now) {
-        if (state_ == SessionState::Active) {
-            if (now - last_sent_ >= heartbeat_interval_ * 1.5) {
-                last_sent_ = now;
-                return {SessionAction::Reply, FIX::msg_type::HeartBeat, 0, FIX::SessionRejectReason::None, ""};
-            }
-            if (now - last_received_ > 1.5 * heartbeat_interval_) {
-                state_ = SessionState::LoggedOut;
-                return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::None, "heartbeat timeout"};
-            }
-        }
-        else if (state_ == SessionState::AwaitingLogon) {
-            if (now - last_received_ > logon_timeout_) {
-                state_ = SessionState::LoggedOut;
-                return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::None, "logon timeout"};
-            }
-        }
-        return {SessionAction::None, 0, 0};
-    }
-    SessionResult reject(FIX::SeqNum ref_seq, FIX::SessionRejectReason reason, std::string_view text) {
+        // NOTĂ: unități! Timestamp e în NANOSECUNDE, heartbeat_interval_ e în SECUNDE. Compară doar ns cu ns
+        //       (înmulțește cu 1'000'000'000 sau ține un membru separat deja în ns).
+        //
+        // ── AwaitingLogon ──
+        //   now - connected_at_ >= logon_timeout_         → disconnect()  (de la CONECTARE, nu de la last_received_)
+        //
+        // ── Active ── ordinea contează:
+        //   1. ÎNTÂI tăcerea clientului: now - last_received_ > 1.5 × HeartBtInt → logout
+        //        (altfel un client mort primește heartbeat-uri la infinit și n-ajungi niciodată la logout)
+        //        1.5 * x e double; rămâi în întregi: 2 * (now - last_received_) > 3 * interval_ns
+        //   2. apoi: now - last_sent_ >= HeartBtInt (fără 1.5) → Reply cu '0'
+        //   NU modifica last_sent_ aici: gateway-ul trimite heartbeat-ul și cheamă on_send(now).
+        //
+        // ── LoggedOut ── nimic.
         return {};
     }
 
-    
+    SessionResult reject(FIX::SeqNum ref_seq, FIX::SessionRejectReason reason, std::string_view text) {
+        // TODO: gateway-ul o cheamă când convert respinge un D/F/G pe care sesiunea l-a livrat deja.
+        //       Întorci un rezultat Reject cu ref_seq / reason / text primite. Starea și secvențele NU se schimbă
+        //       (secvența a fost deja consumată în on_message).
+        return {};
+    }
+
     FIX::SeqNum on_send(FIX::Timestamp now) {
+        // TODO: gateway-ul o cheamă pentru FIECARE mesaj pe care îl trimite; valoarea întoarsă merge în 34.
+        //       Întorci next_outgoing_seq_ (pornește de la 1), apoi îl crești, și last_sent_ = now.
         return {};
     }
 
@@ -230,13 +281,24 @@ public:
     FIX::Timestamp last_sent() const { return last_sent_; }
 
 private:
+    SessionResult logout(std::string_view text) {
+        state_ = SessionState::LoggedOut;
+        return {SessionAction::Logout, 0, 0, {}, text};
+    }
+    SessionResult disconnect() {
+        state_ = SessionState::LoggedOut;
+        return {SessionAction::Disconnect};
+    }
+
     SessionState state_{SessionState::AwaitingLogon};
     std::string exchange_comp_id_;
     std::string client_comp_id_;
     FIX::SeqNum expected_incoming_seq_{1};
     FIX::SeqNum next_outgoing_seq_{1};
     int64_t heartbeat_interval_{0}; // secunde
-    int64_t logon_timeout_{1000000};      // secunde
+
+    FIX::Timestamp logon_timeout_{0};     // nanoseconds
+    FIX::Timestamp connected_at_{0};      // nanosecunde de la epoch
     FIX::Timestamp last_received_{0};     // nanosecunde de la epoch
     FIX::Timestamp last_sent_{0};         // nanosecunde de la epoch
 };
