@@ -35,6 +35,9 @@ target_link_libraries(MatcherTests PRIVATE common GTest::gtest_main)
 add_executable(EngineTests tests/EngineTests.cpp)
 target_link_libraries(EngineTests PRIVATE common GTest::gtest_main)
 
+add_executable(SessionMessagesTests tests/SessionMessagesTests.cpp)
+target_link_libraries(SessionMessagesTests PRIVATE common GTest::gtest_main)
+
 include(GoogleTest) 
 gtest_discover_tests(WriterTests)
 gtest_discover_tests(ParserTests)
@@ -44,4 +47,5 @@ gtest_discover_tests(PoolTests)
 gtest_discover_tests(OrderBookTests)
 gtest_discover_tests(MatcherTests)
 gtest_discover_tests(EngineTests)
+gtest_discover_tests(SessionMessagesTests)
 

@@ -10,6 +10,7 @@
 #include <expected>
 #include <span>
 #include <string_view>
+#include <chrono>
 
 namespace FIX {
     constexpr std::size_t PRICE_DECIMALS = 4;
@@ -92,6 +93,46 @@ namespace FIX {
         return len;
     }
 
+    inline std::size_t format_timestamp(Timestamp t, std::span<char> out) {
+        using namespace std::chrono;
+        const auto tp = sys_time<nanoseconds>(nanoseconds{t});
+        sys_days sd = floor<days>(tp);
+        year_month_day ymd{sd};
+        auto time_since_midnigh = tp - time_point_cast<days>(tp);
+        hh_mm_ss<nanoseconds> hms{time_since_midnigh};
+        auto year = static_cast<int>(ymd.year());
+        auto month = static_cast<unsigned>(ymd.month());
+        auto day = static_cast<unsigned>(ymd.day());
+        auto hour = hms.hours().count();
+        auto minute = hms.minutes().count();
+        auto second = hms.seconds().count();
+        auto millis = hms.subseconds().count() / 1'000'000;
+        char tmp[32];
+        char* end = std::to_chars(tmp, tmp + sizeof(tmp), year).ptr;
+        *end++ = (month / 10) + '0';
+        *end++ = (month % 10) + '0';
+        *end++ = (day / 10) + '0';
+        *end++ = (day % 10) + '0';
+        *end++ = '-';
+        *end++ = (hour / 10) + '0';
+        *end++ = (hour % 10) + '0';
+        *end++ = ':';
+        *end++ = (minute / 10) + '0';
+        *end++ = (minute % 10) + '0';
+        *end++ = ':';
+        *end++ = (second / 10) + '0';
+        *end++ = (second % 10) + '0';
+        *end++ = '.';
+        *end++ = (millis / 100) + '0';
+        *end++ = ((millis / 10) % 10) + '0';
+        *end++ = (millis % 10) + '0';
+        const std::size_t len = static_cast<std::size_t>(end - tmp);
+        if (len > out.size()) return 0;
+        for (std::size_t i{}; i < len; ++i) {
+            out[i] = tmp[i];
+        }
+        return len;
+    }
     // =============================MESSAGES==================================
 
     struct NewOrderFields {
@@ -363,6 +404,33 @@ namespace FIX {
         }
         return "rejected";
     }
+    inline void write_header(Writer& w, char msg_type, std::string_view sender, std::string_view target,
+                             SeqNum seq, Timestamp now) {
+        w.field(tag::MessageType, msg_type)
+         .field(tag::SenderCompId, sender)
+         .field(tag::TargetCompId, target)
+         .field(tag::MsgSeqNum, static_cast<int64_t>(seq))
+         .field(tag::SendingTime, now);
+    }
+
+    inline void write_logon(Writer& w, int64_t heartbeat_interval) {
+        w.field(tag::EncryptionMethod, static_cast<int64_t>(0))
+         .field(tag::HeartBtInt, heartbeat_interval);
+    }
+
+    inline void write_logout(Writer& w, std::string_view text) {
+        if (!text.empty()) {
+            w.field(tag::Text, text);
+        }
+    }
+
+    inline void write_session_reject(Writer& w, SeqNum ref_seq, SessionRejectReason reason, std::string_view text) {
+        w.field(tag::RefSeqNum, static_cast<int64_t>(ref_seq))
+         .field(tag::SessionRejectReason, static_cast<int64_t>(reason));
+        if (!text.empty()) {
+            w.field(tag::Text, text);
+        }
+    }
 
     inline void write_exec_report(Writer& w, const ExecReport& r, 
                                 std::string_view cl_ord_id, 
@@ -402,4 +470,30 @@ namespace FIX {
          .field(tag::CxlRejReason,     static_cast<int64_t>(reason));         
         if (!text.empty()) w.field(tag::Text, text); 
     }
+
+    // TODO 1: format_timestamp(Timestamp t, std::span<char> out) -> std::size_t
+    //   - t = nanosecunde de la epoch (1970-01-01 00:00:00 UTC). Notează unitatea și în types.hpp, lângă Timestamp.
+    //   - scrie "YYYYMMDD-HH:MM:SS.sss" (21 caractere) și întoarce lungimea; 0 dacă out e prea mic (ca format_price).
+    //   - milisecundele se TAIE, nu se rotunjesc. De ce? (vezi testul TruncatesBelowMillis)
+    //   - pentru data din zile poți folosi std::chrono::year_month_day(std::chrono::sys_days{...}).
+    //     Întrebare: de ce nu std::gmtime? (indiciu: thread-safety și static buffer)
+    //   - fiecare câmp are lățime fixă cu zerouri în față: 7 ms → "007".
+    //
+    // TODO 2: write_header(Writer& w, char msg_type, std::string_view sender, std::string_view target,
+    //                      SeqNum seq, Timestamp now)
+    //   - scrie 35, 49, 56, 34, 52 în ordinea asta. Se apelează ÎNAINTEA oricărui alt write_*.
+    //   - de unde vin sender/target la exchange? (vezi CompID în session.hpp)
+    //   - cine îi dă `seq`? Ce se întâmplă dacă două mesaje trimise au aceeași secvență?
+    //
+    // TODO 3: write_logon(Writer& w, int64_t heartbeat_interval)   → 98=0, 108=interval
+    //   - de ce trimite exchange-ul înapoi ACELAȘI 108 pe care l-a primit?
+    //
+    // TODO 4: write_logout(Writer& w, std::string_view text)       → 58 doar dacă text nu e gol
+    //
+    // TODO 5: write_session_reject(Writer& w, SeqNum ref_seq, SessionRejectReason reason, std::string_view text)
+    //   → 45=ref_seq, 373=reason, 58 doar dacă text nu e gol
+    //   - ref_seq e secvența mesajului PRIMIT pe care îl respingi, nu secvența ta de ieșire.
+    //
+    // Heartbeat nu are funcție proprie: e doar write_header cu 35=0.
+    // Testele: tests/SessionMessagesTests.cpp (nu compilează până nu există toate cele 5 funcții).
 }
