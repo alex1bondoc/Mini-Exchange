@@ -30,6 +30,7 @@ namespace FIX {
         Side        side;
         Price       new_price;
         Qty         new_qty;
+        Timestamp   received_at;
     };
     using InboundMessage = std::variant<NewOrder, CancelOrder, ReplaceOrder>;
     // engine ----> client

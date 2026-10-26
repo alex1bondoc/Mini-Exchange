@@ -34,7 +34,7 @@ public:
     }
     std::size_t finish(std::span<char> out) const {
         if (overflow_) return 0;
-        char header[32];
+        char header[32]{};
         std::size_t h = 0;
         for (char c : std::string_view("8=FIX.4.4")) header[h++] = c;
         header[h++] = SOH;

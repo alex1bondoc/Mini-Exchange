@@ -23,12 +23,13 @@ using FIX::Side;
 using Ids   = std::vector<FIX::OrderId>;
 using Fills = std::vector<Fill>;
 
+constexpr FIX::SymbolId SYMBOL = 0;
 constexpr FIX::Price MIN  = 1000;
 constexpr FIX::Price MAX  = 2000;
 constexpr FIX::Price TICK = 5;
 constexpr std::optional<FIX::Price> MARKET = std::nullopt;
 
-OrderBook make_book(std::size_t capacity = 64) { return OrderBook(MIN, MAX, TICK, capacity); }
+OrderBook make_book(std::size_t capacity = 64) { return OrderBook(SYMBOL, MIN, MAX, TICK, capacity); }
 
 FIX::Qty sum_qty(const Fills& fills) {
     return std::accumulate(fills.begin(), fills.end(), FIX::Qty{0},

@@ -50,9 +50,9 @@ namespace FIX {
         Price       max_price;
     };
 }
-inline constexpr Side opposite(Side side) {
-    if (side == Side::Buy) {
-        return Side::Sell;
+inline constexpr FIX::Side opposite(FIX::Side side) {
+    if (side == FIX::Side::Buy) {
+        return FIX::Side::Sell;
     }
-    return Side::Buy;
+    return FIX::Side::Buy;
 }

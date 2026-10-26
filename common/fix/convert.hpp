@@ -323,7 +323,7 @@ namespace FIX {
         return fields;
     }
 
-    char exec_type_char(ExecType type) {
+    inline char exec_type_char(ExecType type) {
         switch (type) {
             case ExecType::New:      return '0';
             case ExecType::Trade:    return 'F';
@@ -334,12 +334,12 @@ namespace FIX {
         return '8';
     }
 
-    char side_char(Side side) {
+    inline char side_char(Side side) {
         if (side == Side::Buy) return '1';
         return '2';
     }
 
-    char ord_status_char(const ExecReport& r) {
+    inline char ord_status_char(const ExecReport& r) {
         if (r.type == ExecType::Rejected) return '8';
         if (r.type == ExecType::Canceled) return '4';
         if (r.leaves_qty == 0 && r.filled_qty > 0) return '2';
@@ -347,7 +347,7 @@ namespace FIX {
         return '0';
     }
 
-    std::string_view reject_text(RejectReason reason) {
+    inline std::string_view reject_text(RejectReason reason) {
         switch (reason) {
             case RejectReason::None:                return "";
             case RejectReason::InvalidPrice:        return "price is not multiple of tick";

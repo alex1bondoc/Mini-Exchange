@@ -9,11 +9,12 @@ namespace {
 using FIX::Side;
 using Ids = std::vector<FIX::OrderId>;
 
+constexpr FIX::SymbolId SYMBOL = 0;
 constexpr FIX::Price MIN  = 1000;
 constexpr FIX::Price MAX  = 2000;
 constexpr FIX::Price TICK = 5;
 
-OrderBook make_book(std::size_t capacity = 64) { return OrderBook(MIN, MAX, TICK, capacity); }
+OrderBook make_book(std::size_t capacity = 64) { return OrderBook(SYMBOL, MIN, MAX, TICK, capacity); }
 
 // id-ul ordinului din fața părții date, sau -1 dacă partea e goală
 FIX::OrderId front_id(const OrderBook& book, Side side) {

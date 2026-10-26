@@ -23,10 +23,7 @@ public:
     best_ask_{static_cast<long>(asks_.size())},
     pool_(capacity) {}
 
-    // TODO (engine): adaugă parametrul `FIX::Qty filled = 0` și setează order.filled = filled.
-    //   Altfel, după o execuție parțială, restul pus în carte are filled = 0
-    //   → CumQty greșit în rapoartele viitoare (vezi on_new pasul 9 în engine.hpp).
-    bool rest(FIX::OrderId id, FIX::ClientId client, FIX::Side side, FIX::Price price, FIX::Qty qty) {
+    bool rest(FIX::OrderId id, FIX::ClientId client, FIX::Side side, FIX::Price price, FIX::Qty qty, FIX::Qty filled = 0) {
         if (id_to_idx_.contains(id) || qty <= 0 || !valid_price(price)) {
             return false;
         }
@@ -42,7 +39,7 @@ public:
         order.side      = side;
         order.price     = price;
         order.qty       = qty;
-
+        order.filled    = filled;
         const long level = to_index(price);
         if (side == FIX::Side::Buy) {
             push_back(bids_[level], idx);
@@ -111,13 +108,24 @@ public:
         return pool_[idx];
     }
 
-    // TODO: variabila `price` nu e folosită, iar cele două ramuri sunt identice → una singură.
-    // TODO (engine, replace caz A): adaugă `shrink(OrderIdx idx, FIX::Qty qty)` — la fel ca reduce
-    //   (scade order.qty și level.total_qty, ordinul NU se mută în coadă), dar FĂRĂ order.filled += qty.
+    void shrink(OrderIdx idx, FIX::Qty qty) {
+        Order& order = pool_[idx];
+
+        if (order.side == FIX::Side::Buy) {
+            Level& level = bids_[to_index(order.price)];
+            level.total_qty -= qty;
+            order.qty -= qty;
+        }
+        else {
+            Level& level = asks_[to_index(order.price)];
+            level.total_qty -= qty;
+            order.qty -= qty;
+        }
+    }
+
     void reduce(OrderIdx idx, FIX::Qty qty) {
         Order& order = pool_[idx];
 
-        FIX::Price price = order.price;
         if (order.side == FIX::Side::Buy) {
             Level& level = bids_[to_index(order.price)];
             level.total_qty -= qty;
@@ -186,9 +194,6 @@ public:
         }
         return ids;
     }
-    // TODO (engine): getter-e min_price() / max_price() — necesare în validate (OutsideBand
-    //   separat de InvalidPrice) și la FOK Market (limita = capătul benzii).
-
     FIX::Price get_min_price() const { return min_price_; }
     FIX::Price get_max_price() const { return max_price_; }
     FIX::Price get_tick_size() const { return tick_size_; }
