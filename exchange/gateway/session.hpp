@@ -80,10 +80,17 @@ Fiecare mesaj trimis: secvența de ieșire++ (pornește de la 1), last_sent = no
 //     pentru fiecare celulă din tabel. Începe cu: Logon valid, D înainte de Logon, secvență sărită.
 //
 //  Verifică-te: pentru fiecare celulă din tabel poți spune DE CE e acel rezultat și nu altul?
-
+#pragma once
 #include <string>
 #include "common/types.hpp"
 #include "common/messages.hpp"
+#include "common/fix/parser.hpp"
+#include "common/fix/tags.hpp"
+#include <string_view>
+#include <cstdint>
+#include <charconv>
+#include <optional>
+
 
 enum class SessionState { AwaitingLogon, Active, LoggedOut };
 
@@ -99,30 +106,118 @@ struct SessionResult {
 
 class Session {
 public:
-    Session(std::string exchange_comp_id, FIX::Timestamp connected_at, FIX::Timestamp logon_timeout):
+    Session(std::string exchange_comp_id, FIX::Timestamp connected_at, FIX::Timestamp heartbeat_interval):
         exchange_comp_id_(std::move(exchange_comp_id)),
         last_received_(connected_at),
         last_sent_(connected_at),
-        heartbeat_interval_(logon_timeout) {}
+        heartbeat_interval_(heartbeat_interval) {}
 
     SessionResult on_message(const FIX::Message& msg, FIX::Timestamp now) {
-        if (state == SessionState::AwaitingLogon) {
-            // TODO
-        } else if (state == SessionState::Active) {
-            // TODO
-        } 
+        if (state_ == SessionState::AwaitingLogon) {
+            if (msg.get(FIX::tag::MsgSeqNum) == "") { return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 34"}; }
+            if (msg.get(FIX::tag::SenderCompId) == "") { return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 49"}; }
+            if (msg.get(FIX::tag::TargetCompId) != exchange_comp_id_) { return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 56"}; }
+            if (msg.type == FIX::msg_type::Logon) {
+                if (msg.get(FIX::tag::EncryptionMethod) == "") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 98"}; }
+                if (msg.get(FIX::tag::EncryptionMethod) != "0") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 98"}; }
+                if (msg.get(FIX::tag::HeartBtInt) == "") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 108"}; }
+                if (msg.get(FIX::tag::HeartBtInt) != "1") { state = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "incorrect 108"}; }
+                state = SessionState::Active;
+                client_comp_id_ = msg.get(FIX::tag::SenderCompId);
+                heartbeat_interval_ = std::stoll(msg.get(FIX::tag::HeartBtInt));
+                last_received_ = now;
+                expected_incoming_seq_ = 2;
+                return {SessionAction::Reply, FIX::msg_type::Logon};
+            } else {
+                return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::InvalidMsgType, "expected Logon"};
+            }
+        } else if (state_ == SessionState::Active) {
+            if (msg.get(FIX::tag::MsgSeqNum) == "") { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 34"}; }  
+            if (msg.get(FIX::tag::MsgSeqNum) != std::to_string(expected_incoming_seq_)) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 34"}; }
+            if (msg.get(FIX::tag::SenderCompId) == "") { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::RequiredTagMissing, "missing 49"}; }
+            if (msg.get(FIX::tag::SenderCompId) != client_comp_id_) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 49"}; }
+            if (msg.get(FIX::tag::TargetCompId) != exchange_comp_id_) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "wrong 56"}; }
+            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::Logon) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::InvalidMsgType, "duplicate Logon"}; }
+            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::HeartBeat) { last_received_ = now; expected_incoming_seq_++; return {SessionAction::None, 0, 0, FIX::SessionRejectReason::None, ""}; }
+            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::Logout) { state_ = SessionState::LoggedOut; return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::None, ""}; }
+            if (msg.get(FIX::tag::MsgType) == FIX::msg_type::NewOrderSingle) {
+                last_received_ = now;
+                expected_incoming_seq_++;
+                std::expected<FIX::NewOrderFields, FIX::ConvertError> fields = FIX::decode_new_order(msg);
+                if (!fields) {
+                    int tmp;
+                    auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(), tmp);
+                    if (ec != std::errc{} || ptr != msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size()) {
+                        return {SessionAction::Reject, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "invalid MsgSeqNum"};
+                    }
+                    return {SessionAction::Reply, 0, tmp};
+                }
+                return {SessionAction::Deliver, 0, 0, FIX::SessionRejectReason::None, ""};
+            } else if (msg.get(FIX::tag::MsgType) == FIX::msg_type::OrderCancelRequest) {
+                last_received_ = now;
+                expected_incoming_seq_++;
+                std::expected<FIX::CancelFields, FIX::ConvertError> fields = FIX::decode_cancel(msg);
+                if (!fields) {
+                    int tmp;
+                    auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(), tmp);
+                    if (ec != std::errc{} || ptr != msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size()) {
+                        return {SessionAction::Reject, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "invalid MsgSeqNum"};  
+                    }
+                    return {SessionAction::Reply, 0, tmp};
+                }
+                return {SessionAction::Deliver, 0, 0, FIX::SessionRejectReason::None, ""};
+            } else if (msg.get(FIX::tag::MsgType) == FIX::msg_type::OrderCancelReplaceRequest) {
+                last_received_ = now;
+                expected_incoming_seq_++;
+                std::expected<FIX::ReplaceFields, FIX::ConvertError> fields = FIX::decode_replace(msg);
+                if (!fields) {
+                    int tmp;
+                    auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(), tmp);
+                    if (ec != std::errc{} || ptr != msg.get(FIX::tag::MsgSeqNum).data(), msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size()) {
+                        return {SessionAction::Reject, 0, 0, FIX::SessionRejectReason::ValueIsIncorrect, "invalid MsgSeqNum"};
+                    }
+                    return {SessionAction::Reject, 0, tmp};
+                }
+                return {SessionAction::Deliver, 0, 0, FIX::SessionRejectReason::None, ""};
+            } else if (msg.get(FIX::tag::MsgType) == FIX::msg_type::Reject) {
+                last_received_ = now;
+                expected_incoming_seq_++;
+                return {SessionAction::None, 0, 0, FIX::SessionRejectReason::None, ""};
+            } else {
+                last_received_ = now;
+                expected_incoming_seq_++;
+                return {SessionAction::Reject, 0, std::stoll(msg.get(FIX::tag::MsgSeqNum)), FIX::SessionRejectReason::InvalidMsgType, "unsupported MsgType"};
+            }
+        }
 
         return {};
     }
     SessionResult on_timer(FIX::Timestamp now) {
-
+        if (state_ == SessionState::Active) {
+            if (now - last_sent_ >= heartbeat_interval_ * 1.5) {
+                last_sent_ = now;
+                return {SessionAction::Reply, FIX::msg_type::HeartBeat, 0, FIX::SessionRejectReason::None, ""};
+            }
+            if (now - last_received_ > 1.5 * heartbeat_interval_) {
+                state_ = SessionState::LoggedOut;
+                return {SessionAction::Logout, 0, 0, FIX::SessionRejectReason::None, "heartbeat timeout"};
+            }
+        }
+        else if (state_ == SessionState::AwaitingLogon) {
+            if (now - last_received_ > logon_timeout_) {
+                state_ = SessionState::LoggedOut;
+                return {SessionAction::Close, 0, 0, FIX::SessionRejectReason::None, "logon timeout"};
+            }
+        }
+        return {SessionAction::None, 0, 0};
     }
     SessionResult reject(FIX::SeqNum ref_seq, FIX::SessionRejectReason reason, std::string_view text) {
-
+        return {};
     }
 
     
     FIX::SeqNum on_send(FIX::Timestamp now) {
+        return {};
     }
 
     SessionState state() const { return state_; }
@@ -141,6 +236,7 @@ private:
     FIX::SeqNum expected_incoming_seq_{1};
     FIX::SeqNum next_outgoing_seq_{1};
     int64_t heartbeat_interval_{0}; // secunde
+    int64_t logon_timeout_{1000000};      // secunde
     FIX::Timestamp last_received_{0};     // nanosecunde de la epoch
     FIX::Timestamp last_sent_{0};         // nanosecunde de la epoch
 };
