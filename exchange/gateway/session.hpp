@@ -56,6 +56,7 @@ Fiecare mesaj trimis: secvența de ieșire++ (pornește de la 1), last_sent = no
 */
 
 // TODO Session — după ce trec testele din SessionMessagesTests.cpp
+
 //
 //  1. Hotărăște ce primește constructorul: CompID-ul exchange-ului, LOGON_TIMEOUT,
 //     momentul conectării (pentru timeout-ul de logon). Session NU citește ceasul singur.
@@ -80,3 +81,66 @@ Fiecare mesaj trimis: secvența de ieșire++ (pornește de la 1), last_sent = no
 //
 //  Verifică-te: pentru fiecare celulă din tabel poți spune DE CE e acel rezultat și nu altul?
 
+#include <string>
+#include "common/types.hpp"
+#include "common/messages.hpp"
+
+enum class SessionState { AwaitingLogon, Active, LoggedOut };
+
+enum class SessionAction { None, Deliver, Reply, Reject, Logout, Close };
+
+struct SessionResult {
+    SessionAction            action{SessionAction::None};
+    char                     reply_type{};   // Reply: ce mesaj trimite gateway-ul ('A', '0')
+    FIX::SeqNum              ref_seq{};      // Reject: 45
+    FIX::SessionRejectReason reason{};       // Reject: 373
+    std::string_view         text{};         // Reject / Logout: 58 (gol = fără 58)
+};
+
+class Session {
+public:
+    Session(std::string exchange_comp_id, FIX::Timestamp connected_at, FIX::Timestamp logon_timeout):
+        exchange_comp_id_(std::move(exchange_comp_id)),
+        last_received_(connected_at),
+        last_sent_(connected_at),
+        heartbeat_interval_(logon_timeout) {}
+
+    SessionResult on_message(const FIX::Message& msg, FIX::Timestamp now) {
+        if (state == SessionState::AwaitingLogon) {
+            // TODO
+        } else if (state == SessionState::Active) {
+            // TODO
+        } 
+
+        return {};
+    }
+    SessionResult on_timer(FIX::Timestamp now) {
+
+    }
+    SessionResult reject(FIX::SeqNum ref_seq, FIX::SessionRejectReason reason, std::string_view text) {
+
+    }
+
+    
+    FIX::SeqNum on_send(FIX::Timestamp now) {
+    }
+
+    SessionState state() const { return state_; }
+    std::string_view exchange_comp_id() const { return exchange_comp_id_; }
+    std::string_view client_comp_id() const { return client_comp_id_; }
+    FIX::SeqNum expected_incoming_seq() const { return expected_incoming_seq_; }
+    FIX::SeqNum next_outgoing_seq() const { return next_outgoing_seq_; }
+    int64_t heartbeat_interval() const { return heartbeat_interval_; }
+    FIX::Timestamp last_received() const { return last_received_; }
+    FIX::Timestamp last_sent() const { return last_sent_; }
+
+private:
+    SessionState state_{SessionState::AwaitingLogon};
+    std::string exchange_comp_id_;
+    std::string client_comp_id_;
+    FIX::SeqNum expected_incoming_seq_{1};
+    FIX::SeqNum next_outgoing_seq_{1};
+    int64_t heartbeat_interval_{0}; // secunde
+    FIX::Timestamp last_received_{0};     // nanosecunde de la epoch
+    FIX::Timestamp last_sent_{0};         // nanosecunde de la epoch
+};

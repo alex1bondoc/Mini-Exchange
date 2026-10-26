@@ -406,11 +406,13 @@ namespace FIX {
     }
     inline void write_header(Writer& w, char msg_type, std::string_view sender, std::string_view target,
                              SeqNum seq, Timestamp now) {
+        char price_buf[32];
+        std::size_t n = format_timestamp(now, price_buf);
         w.field(tag::MessageType, msg_type)
          .field(tag::SenderCompId, sender)
          .field(tag::TargetCompId, target)
          .field(tag::MsgSeqNum, static_cast<int64_t>(seq))
-         .field(tag::SendingTime, now);
+         .field(tag::SendingTime, std::string_view(price_buf, n));
     }
 
     inline void write_logon(Writer& w, int64_t heartbeat_interval) {
