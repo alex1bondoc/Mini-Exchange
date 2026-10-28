@@ -55,31 +55,6 @@ Fiecare mesaj trimis: secvența de ieșire++ (pornește de la 1), last_sent = no
 └──────────────────────┴────────────────────────┴──────────────────────────────┴───────────┘
 */
 
-// TODO Session — după ce trec testele din SessionMessagesTests.cpp
-
-//
-//  1. Hotărăște ce primește constructorul: CompID-ul exchange-ului, LOGON_TIMEOUT,
-//     momentul conectării (pentru timeout-ul de logon). Session NU citește ceasul singur.
-//
-//  2. Membrii: starea, CompID-ul clientului (COPIAT, nu string_view — de ce?),
-//     secvența așteptată la intrare, secvența următoare la ieșire, HeartBtInt,
-//     last_received, last_sent.
-//
-//  3. Ce întoarce Session gateway-ului (SessionResult)? Pornește de la coloana „Rezultate”
-//     din tabel: ce informații îi trebuie gateway-ului ca să construiască singur fiecare răspuns
-//     (tip, secvența de referință pentru 3, motiv 373, text pentru 58)?
-//
-//  4. Metodele:
-//       on_message(const Message&, Timestamp now)  → tabelul de sus, rând cu rând
-//       on_timer(Timestamp now)                    → rândul on_timer
-//       next_outgoing_seq() / on_sent(Timestamp)   → cine actualizează last_sent?
-//       o metodă prin care gateway-ul cere un reject(3) când convert respinge un D/F/G
-//         (Session a acceptat deja mesajul; ce secvență pune în 45?)
-//
-//  5. Teste în tests/SessionTests.cpp, construind FIX::Message direct (fără parser), câte unul
-//     pentru fiecare celulă din tabel. Începe cu: Logon valid, D înainte de Logon, secvență sărită.
-//
-//  Verifică-te: pentru fiecare celulă din tabel poți spune DE CE e acel rezultat și nu altul?
 #pragma once
 #include <string>
 #include "common/types.hpp"
@@ -94,26 +69,22 @@ Fiecare mesaj trimis: secvența de ieșire++ (pornește de la 1), last_sent = no
 
 enum class SessionState { AwaitingLogon, Active, LoggedOut };
 
-// Disconnect = conexiunea se taie FĂRĂ să trimiți nimic; de aceea nu are nevoie de text/reason
 enum class SessionAction { None, Deliver, Reply, Reject, Logout, Disconnect };
 
 struct SessionResult {
     SessionAction            action{SessionAction::None};
     char                     reply_type{};   // Reply: ce mesaj trimite gateway-ul ('A', '0')
     FIX::SeqNum              ref_seq{};      // Reject: 45
-    // NOTĂ: SessionRejectReason NU are None. Când nu ai reason, nu-l scrie deloc în {...}:
-    //       câmpurile omise rămân pe valoarea implicită ({}). Ex: {SessionAction::Deliver} e un rezultat complet.
-    //       Pentru Logout cu text, sari peste reason cu {} : {SessionAction::Logout, 0, 0, {}, "text"}.
     FIX::SessionRejectReason reason{};       // Reject: 373
     std::string_view         text{};         // Reject / Logout: 58 (gol = fără 58)
 };
 
 class Session {
 public:
-    // NOTĂ: lista de inițializare trebuie scrisă în ORDINEA declarării membrilor de jos
-    //       (state_, exchange_comp_id_, ..., logon_timeout_, connected_at_, last_received_, last_sent_).
-    //       Acum last_received_/last_sent_ sunt înaintea lui logon_timeout_/connected_at_ → warning -Wreorder.
-    //       Compilatorul îi inițializează oricum în ordinea declarării, nu în cea scrisă aici.
+    // GREȘEALĂ (warning -Wreorder): lista de inițializare nu e în ordinea declarării membrilor.
+    //   Membrii sunt declarați: ..., logon_timeout_, connected_at_, last_received_, last_sent_,
+    //   dar tu scrii last_received_/last_sent_ ÎNAINTEA lui logon_timeout_/connected_at_.
+    //   Rescrie lista în ordinea declarării.
     Session(std::string exchange_comp_id, FIX::Timestamp connected_at, FIX::Timestamp logon_timeout) :
         exchange_comp_id_(std::move(exchange_comp_id)),
         last_received_(connected_at),
@@ -122,50 +93,8 @@ public:
         connected_at_(connected_at) {}
 
     SessionResult on_message(const FIX::Message& msg, FIX::Timestamp now) {
-        // NOTĂ: Session = stratul de SESIUNE. Se uită doar la header (35, 34, 49, 56) și la câmpurile de sesiune
-        //       (98, 108). NU știe ce e un preț sau o cantitate — asta e treaba lui convert (stratul de deasupra).
-        //       Tipul mesajului e în msg.type (char), NU în msg.get(35) — testele nici nu pun fields[35].
-        //
-        // NOTĂ: fă-ți întâi două funcții private (jos, la private:):
-        //         logout(text)   → state_ = LoggedOut și întoarce {Logout, ..., text}
-        //         disconnect()   → state_ = LoggedOut și întoarce {Disconnect}
-        //       Atunci fiecare eșec e un rând: if (...) return logout("wrong 98");
-        //       Un switch (state_) cu câte o funcție privată pe stare (on_awaiting_logon / on_active) ține
-        //       on_message scurt.
-        //
-        // ── AwaitingLogon ──
-        //   1. msg.type nu e Logon                       → disconnect()   (PRIMA verificare)
-        //   2. 34 trebuie să fie exact "1"                → altfel logout  (text fix → comparație de string_view)
-        //   3. 98 trebuie să fie exact "0"                → altfel logout  (gol e și el != "0", deci o singură verificare)
-        //   4. 108 număr întreg valid și > 0              → altfel logout
-        //        aici chiar parsezi: helper privat (ex. std::optional<int64_t>) cu std::from_chars:
-        //          gol → invalid; ec != std::errc{} → invalid; ptr != sfârșit → invalid ("30s"); apoi > 0
-        //        (același tipar ca la qty în decode_new_order din convert.hpp). NU std::stoll (vrea std::string, aruncă).
-        //   5. 49 nu e gol                                → altfel logout
-        //   6. 56 == exchange_comp_id_                    → altfel logout
-        //   Totul OK: copiezi 49 în client_comp_id_, salvezi HeartBtInt-ul parsat, expected_incoming_seq_ = 2,
-        //             last_received_ = now, state_ = Active, întorci Reply cu 'A'.
-        //   Textul de logout trebuie să fie ne-gol (testul InvalidLogonHasText).
-        //
-        // ── Active ── (ordinea din tabel)
-        //   1. 34 lipsă                                   → logout
-        //   2. 49 != client_comp_id_ sau 56 != exchange   → logout   (întâi „cine ești”...)
-        //   3. 34 != secvența așteptată                   → logout   (...apoi „al câtelea mesaj e”)
-        //        comparația cu std::to_string(expected_incoming_seq_) prinde dintr-o lovitură
-        //        "abc", "-2", "2x", golul și repetarea — fără parsare.
-        //   4. O SINGURĂ DATĂ, înainte de a trata tipul: reține secvența curentă (îți trebuie ca 45),
-        //      apoi expected_incoming_seq_++ și last_received_ = now.
-        //   5. după msg.type:
-        //        Logon (al doilea)  → logout
-        //        Heartbeat          → nimic
-        //        Logout             → logout (răspunzi cu 5, treci în LoggedOut)
-        //        D / F / G          → Deliver. NU decodezi nimic aici! Gateway-ul cheamă convert după Deliver,
-        //                             iar dacă convert eșuează, cheamă session.reject(...). (OrderMessagesAreDelivered
-        //                             trimite un D fără câmpuri de ordin și așteaptă Deliver.)
-        //        Reject (3)         → nimic (dar secvența a fost consumată la pasul 4)
-        //        orice altceva      → Reject cu ref_seq = secvența reținută la pasul 4, reason InvalidMsgType
-        //
-        // ── LoggedOut ── nimic: întorci {}.
+        // GREȘEALĂ (nu compilează, peste tot în funcție): namespace-ul se numește FIX::msg_type, nu FIX::MsgType
+        //   (vezi common/fix/tags.hpp). Atenție și la nume: e FIX::msg_type::HeartBeat (B mare), nu Heartbeat.
         if (state_ == SessionState::AwaitingLogon) {
             if (msg.type != FIX::MsgType::Logon) {
                 return disconnect();
@@ -173,12 +102,18 @@ public:
             if (msg.get(FIX::tag::MsgSeqNum) != "1") {
                 return logout("Logon: 34 != 1");
             }
+            // GREȘEALĂ (nu compilează): tag-ul se numește FIX::tag::EncryptionMethod, nu EncryptMethod.
             if (msg.get(FIX::tag::EncryptMethod) != "0") {
                 return logout("Logon: 98 != 0");
             }
             if (msg.get(FIX::tag::HeartBtInt).empty()) {
                 return logout("Logon: 108 missing");
             }
+            // GREȘEALĂ (logică, mică): parsezi direct în membrul heartbeat_interval_. La "30s" sau "-5" from_chars
+            //   scrie totuși 30 / -5 în membru, iar sesiunea rămâne cu o valoare greșită deși Logon-ul a fost respins.
+            //   Parsează într-o variabilă locală și copiaz-o în membru abia când tot Logon-ul e valid.
+            //   (Stil: ține msg.get(FIX::tag::HeartBtInt) într-un std::string_view local, nu-l apela de 5 ori;
+            //   verificarea .empty() de mai sus e redundantă — from_chars pe gol dă deja eroare, dar nu strică.)
             auto [ptr, ec] = std::from_chars(msg.get(FIX::tag::HeartBtInt).data(),
                                             msg.get(FIX::tag::HeartBtInt).data() + msg.get(FIX::tag::HeartBtInt).size(),
                                             heartbeat_interval_);
@@ -193,7 +128,11 @@ public:
             }
             client_comp_id_ = std::string(msg.get(FIX::tag::SenderCompId));
             expected_incoming_seq_ = 2;
+            // GREȘEALĂ (nu compilează): `state` e getter-ul (funcția state()), membrul este `state_`.
             state = SessionState::Active;
+            // GREȘEALĂ (logică): lipsește last_received_ = now; — testul ValidLogonRepliesLogonAndActivates
+            //   verifică last_received() == momentul Logon-ului, iar fără asta timer-ul de tăcere (1.5 × HeartBtInt)
+            //   s-ar măsura de la conectare, nu de la Logon.
             return {SessionAction::Reply, FIX::MsgType::Logon};
         }
         else if (state_ == SessionState::Active) {
@@ -227,6 +166,12 @@ public:
                 return {};
             }
             else {
+                // GREȘEALĂ (nu compilează): std::from_chars întoarce {ptr, ec}, nu {ec, ptr} — legarea
+                //   structurată e în ordinea câmpurilor, deci aici ec e de fapt pointer-ul.
+                // GREȘEALĂ (de design): nu trebuie să re-parsezi 34 aici. La pasul de mai sus ai verificat deja
+                //   34 == std::to_string(expected_incoming_seq_), deci e sigur valid; ramura logout("34 invalid")
+                //   nu se poate executa niciodată. Reține secvența ÎNAINTE de ++expected_incoming_seq_
+                //   (ex. const FIX::SeqNum seq = expected_incoming_seq_++;) și folosește-o ca ref_seq (45).
                 int64_t tmp;
                 auto [ec, ptr] = std::from_chars(msg.get(FIX::tag::MsgSeqNum).data(),
                                             msg.get(FIX::tag::MsgSeqNum).data() + msg.get(FIX::tag::MsgSeqNum).size(),

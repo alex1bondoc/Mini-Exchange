@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalează Conan
+        run: |
+          pip install conan
+          conan profile detect --force
+
+      - name: Cache Conan
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: conan-${{ runner.os }}-${{ hashFiles('conanfile.txt') }}
+
+      - name: Dependențe
+        run: conan install . --build=missing -s compiler.cppstd=23
+
+      - name: Configurare
+        run: cmake --preset conan-release
+
+      - name: Build
+        run: cmake --build --preset conan-release -j
+
+      - name: Teste
+        run: ctest --preset conan-release --output-on-failure
