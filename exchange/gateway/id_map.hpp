@@ -52,28 +52,10 @@ Ce face gateway-ul cu IdMap la fiecare ExecReport de la engine:
   De aceea remove se face DUPĂ ce ai scris raportul, altfel nu mai ai ce pune în 11.
 */
 
-// TODO IdMap — ca la Session: întâi gândești, apoi teste, apoi cod
-//
-//  1. Membrii. Pentru fiecare dintre cele trei mapări: în ce direcții cauți? (fiecare direcție = o structură)
-//       CompID → ClientId              ClientId → CompID (îți trebuie la 56 în răspunsuri? sau îl ia din Session?)
-//       Symbol → SymbolId              SymbolId → Symbol   (Trade-urile pentru market data au doar SymbolId)
-//       (ClientId, ClOrdID) → OrderId  OrderId → (ClientId, ClOrdID)
-//     Când ai SymbolId / ClientId mici și consecutive, un std::vector indexat e mai bun decât un map. De ce?
-//
-//  2. Căutare cu string_view într-un std::unordered_map<std::string, ...>:
-//       map.find(sv) NU compilează implicit; std::string(sv) alocă la FIECARE mesaj.
-//       Soluția C++20: hash „transparent” (struct cu `using is_transparent = void;` + std::equal_to<>).
-//       Caută „heterogeneous lookup unordered_map”.
-//
-//  3. Cheia (ClientId, ClOrdID): o pereche într-un singur map, sau câte un map per client (vector<map>)?
-//       Gândește-te ce e mai simplu la find și la remove.
-//
-//  4. Teste în tests/IdMapTests.cpp (și adaugă-le în CMakeLists.txt). Începe cu:
-//       același CompID → același ClientId; ClOrdID duplicat la același client → eroare;
-//       același ClOrdID la doi clienți → OK, OrderId-uri diferite; remove apoi add cu același 11 → OK, OrderId NOU;
-//       rename: vechiul 11 nu mai e găsit, noul da; string-ul sursă suprascris → IdMap tot are valoarea veche.
-//
-//  Verifică-te: pentru fiecare rând din tabele poți spune DE CE IdMap face asta și nu altceva?
+// TODO IdMap — teste în tests/IdMapTests.cpp (și adaugă-le în CMakeLists.txt). Începe cu:
+//   același CompID → același ClientId; ClOrdID duplicat la același client → eroare;
+//   același ClOrdID la doi clienți → OK, OrderId-uri diferite; remove apoi add cu același 11 → OK, OrderId NOU;
+//   rename: vechiul 11 nu mai e găsit, noul da; string-ul sursă suprascris → IdMap tot are valoarea veche.
 
 #pragma once
 #include <cstdint>
